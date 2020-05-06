@@ -449,17 +449,29 @@ pub enum Token {
     MSUnaligned,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Copy)]
 pub struct Location {
     pub pos: usize,
     pub line: u32,
     pub column: u32,
 }
 
+impl Location {
+    fn dummy() -> Self {
+        Self {
+            pos: usize::max_value(),
+            line: u32::max_value(),
+            column: u32::max_value(),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct LocToken {
     pub tok: Token,
     pub file: Option<FileId>,
+    // TODO: store start on stack so that it can be in registers
+    // instead of storing it on heap. This would improve performance.
     pub start: Location,
     pub end: Location,
 }
@@ -497,6 +509,7 @@ pub struct Lexer<'a, PC: PreprocContext> {
     pub(crate) buf: Buffer<'a>,
     pub(crate) context: PC,
     pub(crate) comment: Option<&'a [u8]>,
+    pub(crate) start: Location,
 }
 
 macro_rules! get_operator {
@@ -549,10 +562,11 @@ macro_rules! get_basic_operator {
 }
 
 macro_rules! loc {
-    ($self: ident, $tok: expr, $start: expr) => {{
+    ($self: ident, $tok: expr) => {{
         let tok = $tok;
         let end = $self.location();
-        LocToken::new(tok, $self.buf.get_source_id(), $start, end)
+        let start = $self.start;
+        LocToken::new(tok, $self.buf.get_source_id(), start, end)
     }};
 }
 
@@ -562,6 +576,7 @@ impl<'a, PC: PreprocContext> Lexer<'a, PC> {
             buf: Buffer::new(buf.to_vec(), FileId(0), PathIndex(0)),
             context: PC::default(),
             comment: None,
+            start: Location::dummy(),
         }
     }
 
@@ -570,6 +585,7 @@ impl<'a, PC: PreprocContext> Lexer<'a, PC> {
             buf: Buffer::new(buf.to_vec(), source_id, PathIndex(0)),
             context,
             comment: None,
+            start: Location::dummy(),
         }
     }
 
@@ -631,6 +647,7 @@ impl<'a, PC: PreprocContext> Lexer<'a, PC> {
             buf: buffer,
             context,
             comment: None,
+            start: Location::dummy(),
         }
     }
 
@@ -1013,7 +1030,7 @@ impl<'a, PC: PreprocContext> Lexer<'a, PC> {
 
     pub fn next_token(&mut self) -> LocToken {
         loop {
-            let start = self.location();
+            self.start = self.location();
             if self.buf.check_char() {
                 let c = self.buf.next_char();
                 self.buf.inc();
@@ -1023,171 +1040,166 @@ impl<'a, PC: PreprocContext> Lexer<'a, PC> {
                         self.buf.add_new_line();
                         // TODO: useless in general but useful to know the a #if condition is finished
                         // Probably remove it and find a way for the condition stuff
-                        return loc!(self, Token::Eol, start);
+                        return loc!(self, Token::Eol);
                     }
                     b' ' => skip_whites!(self),
                     b'!' => {
-                        return loc!(self, self.get_exclamation(), start);
+                        return loc!(self, self.get_exclamation());
                     }
                     b'\"' => {
-                        return loc!(self, self.get_string(StringType::None), start);
+                        return loc!(self, self.get_string(StringType::None));
                     }
                     b'#' => {
-                        return loc!(self, self.get_preproc(), start);
+                        return loc!(self, self.get_preproc());
                     }
                     b'$' => {
-                        return loc!(self, Token::Dollar, start);
+                        return loc!(self, Token::Dollar);
                     }
                     b'%' => {
-                        return loc!(self, self.get_modulo(), start);
+                        return loc!(self, self.get_modulo());
                     }
                     b'&' => {
                         return loc!(
                             self,
-                            get_operator!(self, b'&', And, AndAnd, AndEqual),
-                            start
+                            get_operator!(self, b'&', And, AndAnd, AndEqual)
                         );
                     }
                     b'\'' => {
-                        return loc!(self, self.get_char(StringType::None), start);
+                        return loc!(self, self.get_char(StringType::None));
                     }
                     b'(' => {
-                        return loc!(self, Token::LeftParen, start);
+                        return loc!(self, Token::LeftParen);
                     }
                     b')' => {
-                        return loc!(self, Token::RightParen, start);
+                        return loc!(self, Token::RightParen);
                     }
                     b'*' => {
                         return loc!(
                             self,
-                            get_basic_operator!(self, b'*', Star, StarEqual),
-                            start
+                            get_basic_operator!(self, b'*', Star, StarEqual)
                         );
                     }
                     b'+' => {
                         return loc!(
                             self,
-                            get_operator!(self, b'+', Plus, PlusPlus, PlusEqual),
-                            start
+                            get_operator!(self, b'+', Plus, PlusPlus, PlusEqual)
                         );
                     }
                     b',' => {
-                        return loc!(self, Token::Comma, start);
+                        return loc!(self, Token::Comma);
                     }
                     b'-' => {
-                        return loc!(self, self.get_minus(), start);
+                        return loc!(self, self.get_minus());
                     }
                     b'.' => {
-                        return loc!(self, self.get_dot_or_number(), start);
+                        return loc!(self, self.get_dot_or_number());
                     }
                     b'/' => {
-                        return loc!(self, self.get_slash(), start);
+                        return loc!(self, self.get_slash());
                     }
                     b'0'..=b'9' => {
-                        return loc!(self, self.get_number(u64::from(c - b'0')), start);
+                        return loc!(self, self.get_number(u64::from(c - b'0')));
                     }
                     b':' => {
-                        return loc!(self, get_operator!(self, b':', Colon, ColonColon), start);
+                        return loc!(self, get_operator!(self, b':', Colon, ColonColon));
                     }
                     b';' => {
-                        return loc!(self, Token::SemiColon, start);
+                        return loc!(self, Token::SemiColon);
                     }
                     b'<' => {
-                        return loc!(self, self.get_lower(), start);
+                        return loc!(self, self.get_lower());
                     }
                     b'=' => {
-                        return loc!(self, get_operator!(self, b'=', Equal, EqualEqual), start);
+                        return loc!(self, get_operator!(self, b'=', Equal, EqualEqual));
                     }
                     b'>' => {
-                        return loc!(self, self.get_greater(), start);
+                        return loc!(self, self.get_greater());
                     }
                     b'?' => {
-                        return loc!(self, Token::Question, start);
+                        return loc!(self, Token::Question);
                     }
                     b'@' => {
-                        return loc!(self, Token::At, start);
+                        return loc!(self, Token::At);
                     }
                     b'A'..=b'K' | b'M'..=b'Q' | b'S'..=b'T' | b'V'..=b'Z' => {
                         if let Some(tok) = self.get_identifier() {
-                            return loc!(self, tok, start);
+                            return loc!(self, tok);
                         }
                     }
                     b'L' => {
                         if let Some(tok) = self.get_special_string_char(StringType::L) {
-                            return loc!(self, tok, start);
+                            return loc!(self, tok);
                         } else if let Some(tok) = self.get_identifier() {
-                            return loc!(self, tok, start);
+                            return loc!(self, tok);
                         }
                     }
                     b'R' => {
                         if let Some(tok) = self.get_special_string_char(StringType::R) {
-                            return loc!(self, tok, start);
+                            return loc!(self, tok);
                         } else if let Some(tok) = self.get_identifier() {
-                            return loc!(self, tok, start);
+                            return loc!(self, tok);
                         }
                     }
                     b'U' => {
                         if let Some(tok) = self.get_special_string_char(StringType::UU) {
-                            return loc!(self, tok, start);
+                            return loc!(self, tok);
                         } else if let Some(tok) = self.get_identifier() {
-                            return loc!(self, tok, start);
+                            return loc!(self, tok);
                         }
                     }
                     b'[' => {
                         return loc!(
                             self,
-                            get_operator!(self, b'[', LeftBrack, DoubleLeftBrack),
-                            start
+                            get_operator!(self, b'[', LeftBrack, DoubleLeftBrack)
                         );
                     }
                     b'\\' => {
                         if let Some(tok) = self.get_backslash() {
-                            return loc!(self, tok, start);
+                            return loc!(self, tok);
                         }
                     }
                     b']' => {
                         return loc!(
                             self,
-                            get_operator!(self, b']', RightBrack, DoubleRightBrack),
-                            start
+                            get_operator!(self, b']', RightBrack, DoubleRightBrack)
                         );
                     }
                     b'^' => {
-                        return loc!(self, get_basic_operator!(self, b'^', Xor, XorEqual), start);
+                        return loc!(self, get_basic_operator!(self, b'^', Xor, XorEqual));
                     }
                     b'_' | b'a'..=b't' | b'v'..=b'z' => {
                         if let Some(tok) = self.get_identifier_or_keyword() {
-                            return loc!(self, tok, start);
+                            return loc!(self, tok);
                         }
                     }
                     b'u' => {
                         if let Some(tok) = self.get_special_string_char(StringType::U) {
-                            return loc!(self, tok, start);
+                            return loc!(self, tok);
                         } else if let Some(tok) = self.get_identifier_or_keyword() {
-                            return loc!(self, tok, start);
+                            return loc!(self, tok);
                         }
                     }
                     b'{' => {
-                        return loc!(self, Token::LeftBrace, start);
+                        return loc!(self, Token::LeftBrace);
                     }
                     b'|' => {
-                        return loc!(self, get_operator!(self, b'|', Or, OrOr, OrEqual), start);
+                        return loc!(self, get_operator!(self, b'|', Or, OrOr, OrEqual));
                     }
                     b'}' => {
-                        return loc!(self, Token::RightBrace, start);
+                        return loc!(self, Token::RightBrace);
                     }
                     b'~' => {
-                        return loc!(self, Token::Tilde, start);
+                        return loc!(self, Token::Tilde);
                     }
                     b'\x7F'..=b'\xFF' => {
                         if let Some(tok) = self.get_identifier() {
-                            return loc!(self, tok, start);
+                            return loc!(self, tok);
                         }
                     }
                     _ => {}
                 }
             } else {
-                return loc!(self, Token::Eof, start);
+                return loc!(self, Token::Eof);
             }
         }
     }
